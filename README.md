@@ -2,14 +2,23 @@
 
 A pinball construction set for the MEGA65: build tables from parts, play
 them, save them. Twelve tables come with it. It is written in C (and some
-45GS02 assembly) with the [M65Compiler](../m65compiler) tool suite (cc45,
-ca45, ln45, disk45, tune45).
+45GS02 assembly) with the [M65Compiler](https://github.com/CTalkobt/M65Compiler)
+tool suite (cc45, ca45, ln45, disk45, tune45).
 
 ![The menu](doc/menu.png)
 ![A game](doc/play.png)
 ![The editor](doc/editor.png)
 
+## Download
+
+The latest release, with the disk image ready to run:
+<https://github.com/CTalkobt/m65-pinballcs/releases> (v0.9, a preliminary
+release: <https://github.com/CTalkobt/m65-pinballcs/releases/tag/v0.9>).
+
 ## Build and run
+
+Needs the M65Compiler tree next to this one (`../m65compiler`, or
+`make M65=<path>`): get it from <https://github.com/CTalkobt/M65Compiler>.
 
 ```sh
 make            # build/pinball.d81: the programs, their overlays, art, sounds, 12 tables
