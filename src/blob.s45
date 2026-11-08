@@ -1,0 +1,712 @@
+; blob.s45 — the renderer's inner loop: the pixels within r of a segment
+;
+; render.c sets the blob up (bl_* below, and the clip rectangle) and calls
+; _blob_core, which does every pixel of the clipped box:
+;
+;   p  = (x - ax, y - ay) in 1/16 px
+;   segment (len16 > 0): t = p.u; q = p - u t (across the segment); the
+;     distance squared to the nearest point (the start, the end or q)
+;     decides coverage; the shading uses q (so that an arc's pieces join)
+;   coverage: d2 = (dist^2 + 128) >> 8 <= rr (pixels^2)
+;   decal:  edge colour where d2 >= rin, else ramp
+;   flat:   a lamp: its rim where d2 >= rin, a glint up and left, the body
+;   shadow: the pixel darkened (playfield ramps to their shadow twins,
+;           other ramps 5 levels down, a lamp slot to its rim)
+;   shaded: in = (q . L) / r + hemi(dist / r) * Lz, a ramp level from it
+;           (a lamp slot: rim, body or glint)
+;
+; It calls fmath.s45's helpers ($10-$17 their arguments, $08-$0B theirs);
+; its own state is in absolute memory, the pixel pointer at $18/$19.
+
+.cpu _45gs02
+.overlay draw2
+.segmentOrder code, data, bss
+
+.global _blob_core
+.global _bl_ax, _bl_ay, _bl_ux, _bl_uy, _bl_len16, _bl_ex16, _bl_ey16
+.global _bl_rr, _bl_rin, _bl_kmul, _bl_lxr, _bl_lyr, _bl_ramp, _bl_style, _bl_edge, _bl_glint
+.global _bl_cx0, _bl_cx1, _bl_cy0, _bl_cy1, _bl_sx, _bl_buf
+.extern _fmul, _fdot, _sq2, _mul32, _sqrt8_ext, _hz_ext
+
+PAL_BG   = 16
+PAL_BGS  = 32
+PAL_PAT  = 48
+PAL_PATS = 64
+PAL_WALL = 80
+PAL_LAMP = 160
+LZ       = 11469
+
+ST_FLAT   = 1
+ST_DECAL  = 4
+ST_SHADOW = $80
+
+Q = $18                     ; the pixel's address
+
+.bss
+_bl_ax:    .res 2
+_bl_ay:    .res 2
+_bl_ux:    .res 2
+_bl_uy:    .res 2
+_bl_len16: .res 2           ; 0: a dome (a point)
+_bl_ex16:  .res 2           ; the end, from the start, 1/16 px
+_bl_ey16:  .res 2
+_bl_rr:    .res 2           ; r * r + r
+_bl_rin:   .res 2           ; (r - 1)^2: the rim from there
+_bl_kmul:  .res 2           ; 1024 / r: dist8 * kmul >> 8 = dist / r * 32
+_bl_lxr:   .res 2           ; Lx / r
+_bl_lyr:   .res 2
+_bl_ramp:  .res 1
+_bl_style: .res 1
+_bl_edge:  .res 1
+_bl_glint: .res 1           ; a flat lamp's glint: radius / 3
+_bl_cx0:   .res 2
+_bl_cx1:   .res 2
+_bl_cy0:   .res 2
+_bl_cy1:   .res 2
+_bl_sx:    .res 2
+_bl_buf:   .res 2           ; render_buf
+cur_x:     .res 2
+cur_y:     .res 2
+v_px:      .res 2           ; 1/16 px
+v_py:      .res 2
+v_qx:      .res 2
+v_qy:      .res 2
+sh_x:      .res 2           ; the point shaded from (1/16 px, then px)
+sh_y:      .res 2
+v_t:       .res 2
+d2:        .res 4
+zsave:     .res 10
+v_in:      .res 2
+v_k:       .res 1
+
+.code
+
+; d2 = (sq2 result + 128) >> 8, saturated to 16 bits ($FFFF: far)
+.macro D2FROMQ
+    sta d2
+    stx d2 + 1
+    sty d2 + 2
+    stz d2 + 3
+    clc
+    lda d2
+    adc #$80
+    lda d2 + 1
+    adc #0
+    sta d2
+    lda d2 + 2
+    adc #0
+    sta d2 + 1
+    lda d2 + 3
+    adc #0
+    beq @ok\@
+    lda #$FF
+    sta d2
+    sta d2 + 1
+@ok\@:
+.endmacro
+
+; carry set if d2 (16 bits) > the 16-bit value at addr
+.macro D2GT addr
+    lda addr + 1
+    cmp d2 + 1
+    bne @n\@
+    lda addr
+    cmp d2
+@n\@:
+    ; C clear when addr < d2
+.endmacro
+
+proc _blob_core
+    .zp_uses $08, $09, $0A, $0B
+    .zp_clobbers $08, $09, $0A, $0B
+    .reg_clobbers A, X, Y, Z
+    .flag_clobbers C, N, Z
+    ; $10-$19 kept for the caller (the linker does not see this call)
+    ldx #9
+@save:
+    lda $10,x
+    sta zsave,x
+    dex
+    bpl @save
+    lda _bl_cy0
+    sta cur_y
+    lda _bl_cy0 + 1
+    sta cur_y + 1
+@row:
+    ; the row's first pixel: buf + y * 8 + cx0 - sx
+    lda cur_y
+    asl
+    sta Q
+    lda cur_y + 1
+    rol
+    sta Q + 1
+    asl Q
+    rol Q + 1
+    asl Q
+    rol Q + 1
+    clc
+    lda Q
+    adc _bl_buf
+    sta Q
+    lda Q + 1
+    adc _bl_buf + 1
+    sta Q + 1
+    sec
+    lda _bl_cx0
+    sbc _bl_sx
+    clc
+    adc Q
+    sta Q
+    lda Q + 1
+    adc #0
+    sta Q + 1
+    ; py = (y - ay) << 4
+    sec
+    lda cur_y
+    sbc _bl_ay
+    sta v_py
+    lda cur_y + 1
+    sbc _bl_ay + 1
+    sta v_py + 1
+    ldx #4
+@sy: asl v_py
+    rol v_py + 1
+    dex
+    bne @sy
+    lda _bl_cx0
+    sta cur_x
+    lda _bl_cx0 + 1
+    sta cur_x + 1
+@pixel:
+    sec
+    lda cur_x
+    sbc _bl_ax
+    sta v_px
+    lda cur_x + 1
+    sbc _bl_ax + 1
+    sta v_px + 1
+    ldx #4
+@sx: asl v_px
+    rol v_px + 1
+    dex
+    bne @sx
+    lda _bl_len16
+    ora _bl_len16 + 1
+    bne @segment
+    jmp @point
+
+@segment:
+    ; t = fdot(px, ux, py, uy)
+    lda v_px
+    sta $10
+    lda v_px + 1
+    sta $11
+    lda _bl_ux
+    sta $12
+    lda _bl_ux + 1
+    sta $13
+    lda v_py
+    sta $14
+    lda v_py + 1
+    sta $15
+    lda _bl_uy
+    sta $16
+    lda _bl_uy + 1
+    sta $17
+    jsr _fdot
+    sta v_t
+    stx v_t + 1
+    ; qx = px - fmul(ux, t)
+    lda _bl_ux
+    sta $10
+    lda _bl_ux + 1
+    sta $11
+    lda v_t
+    sta $12
+    lda v_t + 1
+    sta $13
+    jsr _fmul
+    sta $08
+    sec
+    lda v_px
+    sbc $08
+    sta v_qx
+    lda v_px + 1
+    stx $08
+    sbc $08
+    sta v_qx + 1
+    lda _bl_uy
+    sta $10
+    lda _bl_uy + 1
+    sta $11
+    lda v_t
+    sta $12
+    lda v_t + 1
+    sta $13
+    jsr _fmul
+    sta $08
+    sec
+    lda v_py
+    sbc $08
+    sta v_qy
+    lda v_py + 1
+    stx $08
+    sbc $08
+    sta v_qy + 1
+    ; the distance to the nearest point
+    lda v_t + 1
+    bmi @before
+    sec
+    lda _bl_len16
+    sbc v_t
+    lda _bl_len16 + 1
+    sbc v_t + 1
+    bmi @after                  ; t > len16
+    lda v_qx
+    sta $10
+    lda v_qx + 1
+    sta $11
+    lda v_qy
+    sta $12
+    lda v_qy + 1
+    sta $13
+    bra @cover
+@before:
+    lda v_px
+    sta $10
+    lda v_px + 1
+    sta $11
+    lda v_py
+    sta $12
+    lda v_py + 1
+    sta $13
+    bra @cover
+@after:
+    sec
+    lda v_px
+    sbc _bl_ex16
+    sta $10
+    lda v_px + 1
+    sbc _bl_ex16 + 1
+    sta $11
+    sec
+    lda v_py
+    sbc _bl_ey16
+    sta $12
+    lda v_py + 1
+    sbc _bl_ey16 + 1
+    sta $13
+@cover:
+    jsr _sq2
+    D2FROMQ
+    D2GT _bl_rr
+    bcs @in1
+    jmp @next
+@in1:
+    lda _bl_style
+    and #ST_DECAL
+    beq @across
+    jmp @decal
+@across:
+    ; shaded across the segment: q, and its distance
+    lda v_qx
+    sta sh_x
+    sta $10
+    lda v_qx + 1
+    sta sh_x + 1
+    sta $11
+    lda v_qy
+    sta sh_y
+    sta $12
+    lda v_qy + 1
+    sta sh_y + 1
+    sta $13
+    jsr _sq2
+    D2FROMQ
+    jmp @shade
+
+@point:
+    lda v_px
+    sta $10
+    lda v_px + 1
+    sta $11
+    lda v_py
+    sta $12
+    lda v_py + 1
+    sta $13
+    jsr _sq2
+    D2FROMQ
+    D2GT _bl_rr
+    bcs @in2
+    jmp @next
+@in2:
+    lda _bl_style
+    and #ST_DECAL
+    beq @nodecal
+    jmp @decal
+@nodecal:
+    lda v_px
+    sta sh_x
+    lda v_px + 1
+    sta sh_x + 1
+    lda v_py
+    sta sh_y
+    lda v_py + 1
+    sta sh_y + 1
+    lda _bl_style
+    and #ST_FLAT
+    beq @shade
+    ; a flat lamp: rim, glint, body
+    D2GT _bl_rin
+    bcc @rim
+    ; (px/16 + g)^2 + (py/16 + g)^2 <= g^2: the glint
+    lda v_px
+    sta $10
+    lda v_px + 1
+    sta $11
+    ldx #4
+@g1: lda $11
+    cmp #$80
+    ror $11
+    ror $10
+    dex
+    bne @g1
+    clc
+    lda $10
+    adc _bl_glint
+    sta $10
+    lda $11
+    adc #0
+    sta $11
+    lda v_py
+    sta $12
+    lda v_py + 1
+    sta $13
+    ldx #4
+@g2: lda $13
+    cmp #$80
+    ror $13
+    ror $12
+    dex
+    bne @g2
+    clc
+    lda $12
+    adc _bl_glint
+    sta $12
+    lda $13
+    adc #0
+    sta $13
+    jsr _sq2
+    sta d2
+    stx d2 + 1
+    lda _bl_glint
+    sta $10
+    lda #0
+    sta $11
+    sta $12
+    sta $13
+    jsr _sq2                    ; g^2
+    cmp d2
+    txa
+    sbc d2 + 1
+    bcc @body                   ; g^2 < the distance: not the glint
+    ldz #2
+    bra @lampput
+@body:
+    ldz #1
+    bra @lampput
+@rim:
+    ldz #0
+@lampput:
+    tza
+    clc
+    adc _bl_ramp
+    ldy #0
+    sta (Q),y
+    jmp @next
+
+@decal:
+    D2GT _bl_rin
+    lda _bl_ramp
+    bcs @dput
+    lda _bl_edge
+@dput:
+    ldy #0
+    sta (Q),y
+    jmp @next
+
+@shade:
+    ; the shadow: darken what is there
+    bit _bl_style
+    bpl @lit
+    ldy #0
+    lda (Q),y
+    cmp #PAL_BGS
+    bcs @s1
+    cmp #PAL_BG
+    bcc @sdone
+    bra @s16                    ; 16-31: + 16
+@s1:
+    cmp #PAL_PAT
+    bcc @sdone                  ; 32-47: in shadow already
+    cmp #PAL_PATS
+    bcc @s16                    ; 48-63: + 16
+    cmp #PAL_WALL
+    bcc @sdone
+    cmp #PAL_LAMP
+    bcs @slamp
+    and #15                     ; a ramp: 5 levels down
+    cmp #5
+    bcc @sfloor
+    lda (Q),y
+    sec
+    sbc #5
+    bra @sput
+@sfloor:
+    lda (Q),y
+    and #$F0
+    bra @sput
+@slamp:
+    sec                         ; a lamp slot: its rim (PAL_LAMP + (v - PAL_LAMP) / 3 * 3)
+    sbc #PAL_LAMP
+    ldx #0
+@sl: cmp #3
+    bcc @sl2
+    sbc #3
+    inx
+    bra @sl
+@sl2: txa
+    sta $08
+    asl
+    adc $08
+    adc #PAL_LAMP
+    bra @sput
+@s16:
+    clc
+    adc #16
+@sput:
+    sta (Q),y
+@sdone:
+    jmp @next
+
+@lit:
+    ; px, py back to pixels, rounded
+    clc
+    lda sh_x
+    adc #8
+    sta sh_x
+    lda sh_x + 1
+    adc #0
+    sta sh_x + 1
+    ldx #4
+@r1: lda sh_x + 1
+    cmp #$80
+    ror sh_x + 1
+    ror sh_x
+    dex
+    bne @r1
+    clc
+    lda sh_y
+    adc #8
+    sta sh_y
+    lda sh_y + 1
+    adc #0
+    sta sh_y + 1
+    ldx #4
+@r2: lda sh_y + 1
+    cmp #$80
+    ror sh_y + 1
+    ror sh_y
+    dex
+    bne @r2
+    ; dist8 = sqrt8[d2] (d2 < 1024), else r * 8: k = dist8 * kmul >> 8 (0..32)
+    lda d2 + 1
+    cmp #4
+    bcc @sq
+    lda #32
+    bra @kset
+@sq: lda _sqrt8_ext
+    clc
+    adc d2
+    sta $08
+    lda _sqrt8_ext + 1
+    adc d2 + 1
+    sta $09
+    ldy #0
+    lda ($08),y
+    sta $10                     ; dist8 * kmul
+    lda #0
+    sta $11
+    lda _bl_kmul
+    sta $12
+    lda _bl_kmul + 1
+    sta $13
+    ; (dist8 * kmul) >> 8 through fmul: (a * b) >> 14 with a << 6
+    ldx #6
+@k6: asl $10
+    rol $11
+    dex
+    bne @k6
+    jsr _fmul
+    cmp #33
+    bcc @kset
+    lda #32
+@kset:
+    sta v_k
+    ; in = px * lxr + py * lyr (it fits 16 bits) + hz[k] (hemi * Lz >> 8)
+    lda sh_x
+    sta $10
+    lda sh_x + 1
+    sta $11
+    lda _bl_lxr
+    sta $12
+    lda _bl_lxr + 1
+    sta $13
+    jsr _mul32
+    sta v_in
+    stx v_in + 1
+    lda sh_y
+    sta $10
+    lda sh_y + 1
+    sta $11
+    lda _bl_lyr
+    sta $12
+    lda _bl_lyr + 1
+    sta $13
+    jsr _mul32
+    clc
+    adc v_in
+    sta v_in
+    txa
+    adc v_in + 1
+    sta v_in + 1
+    lda v_k
+    asl
+    clc
+    adc _hz_ext
+    sta $08
+    lda _hz_ext + 1
+    adc #0
+    sta $09
+    ldy #0
+    clc
+    lda ($08),y
+    adc v_in
+    sta v_in
+    iny
+    lda ($08),y
+    adc v_in + 1
+    sta v_in + 1
+    ; a lamp slot: rim, body or glint
+    lda _bl_ramp
+    cmp #PAL_LAMP
+    bcc @level
+    ldz #2
+    lda v_in + 1                  ; in > 14000 ($36B0): the glint
+    bmi @notg
+    cmp #$36
+    bcc @notg
+    bne @lput
+    lda v_in
+    cmp #$B1
+    bcs @lput
+@notg:
+    ldz #0
+    lda v_k
+    cmp #27
+    bcs @lput
+    lda v_in + 1                  ; in < 4000 ($0FA0): the rim
+    bmi @lput
+    cmp #$0F
+    bcc @lput
+    bne @body2
+    lda v_in
+    cmp #$A0
+    bcc @lput
+@body2:
+    ldz #1
+@lput:
+    tza
+    clc
+    adc _bl_ramp
+    ldy #0
+    sta (Q),y
+    jmp @next
+
+@level:
+    ; > 15400 ($3C28): 15; <= 0: 1 below -8192, else 2; else 2 + in * 12 >> 14
+    lda v_in + 1
+    bmi @neg
+    ora v_in
+    beq @two
+    lda v_in + 1
+    cmp #$3C
+    bcc @mid
+    bne @top
+    lda v_in
+    cmp #$29
+    bcc @mid
+@top:
+    lda #15
+    bra @put
+@neg:
+    lda v_in + 1
+    cmp #$E0
+    bcs @two
+    lda #1
+    bra @put
+@two:
+    lda #2
+    bra @put
+@mid:
+    lda v_in
+    sta $10
+    lda v_in + 1
+    sta $11
+    lda #12
+    sta $12
+    lda #0
+    sta $13
+    jsr _fmul
+    clc
+    adc #2
+@put:
+    clc
+    adc _bl_ramp
+    ldy #0
+    sta (Q),y
+
+@next:
+    inw Q
+    inc cur_x
+    bne @nx
+    inc cur_x + 1
+@nx:
+    lda _bl_cx1
+    cmp cur_x
+    lda _bl_cx1 + 1
+    sbc cur_x + 1
+    bmi @rowdone
+    jmp @pixel
+@rowdone:
+    inc cur_y
+    bne @ny
+    inc cur_y + 1
+@ny:
+    lda _bl_cy1
+    cmp cur_y
+    lda _bl_cy1 + 1
+    sbc cur_y + 1
+    bmi @done
+    jmp @row
+@done:
+    ldx #9
+@rest:
+    lda zsave,x
+    sta $10,x
+    dex
+    bpl @rest
+    ldz #0
+    rts
+    .func_flags zp_call
+endproc

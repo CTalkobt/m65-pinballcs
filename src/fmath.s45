@@ -1,0 +1,165 @@
+; fmath.s45 — fixed-point arithmetic on the MEGA65's hardware multiplier
+;
+; The renderer and the physics multiply 16-bit values all the time, mostly
+; to shift the product back down (unit vectors are 1.14). As C each product
+; is a 32-bit value inline; these return what is wanted:
+;
+;   s16 fmul(s16 a, s16 b)                 (a * b) >> 14
+;   s16 fdot(s16 a, s16 b, s16 c, s16 d)   (a * b + c * d) >> 14
+;   s32 sq2(s16 a, s16 b)                  a * a + b * b
+;   s32 mul32(s16 a, s16 b)                a * b
+;
+; The multiplier ($D770: A, $D774: B, 32 bits each; the 64-bit product at
+; $D778, ready at once) is unsigned; with both inputs sign-extended to 32
+; bits the low 32 bits of its product are the signed product.
+; ZP convention: the arguments at $10, $12, $14, $16; 16-bit results in
+; A/X, 32-bit in A/X/Y/Z. $08-$0B (the runtime's scratch) hold sums.
+
+.cpu _45gs02
+.segmentOrder code, data, bss
+
+.global _fmul, _fdot, _sq2, _mul32
+
+MULA = $D770
+MULB = $D774
+PROD = $D778
+
+.code
+
+; the multiplier's inputs from base page x (A) and y (B), sign-extended
+.macro LOADAB p1, p2
+    lda p1
+    sta MULA
+    lda p1 + 1
+    sta MULA + 1
+    asl
+    lda #0
+    bcc @sa\@
+    lda #$FF
+@sa\@:
+    sta MULA + 2
+    sta MULA + 3
+    lda p2
+    sta MULB
+    lda p2 + 1
+    sta MULB + 1
+    asl
+    lda #0
+    bcc @sb\@
+    lda #$FF
+@sb\@:
+    sta MULB + 2
+    sta MULB + 3
+.endmacro
+
+proc _fmul
+    .zp_uses $10, $11, $12, $13, $08, $09, $0A
+    .zp_clobbers $08, $09, $0A
+    .reg_clobbers A, X
+    .flag_clobbers C, N, Z
+    LOADAB $10, $12
+    lda PROD + 1
+    sta $08
+    lda PROD + 2
+    sta $09
+    lda PROD + 3
+    sta $0A
+    asl $08
+    rol $09
+    rol $0A
+    asl $08
+    rol $09
+    rol $0A
+    lda $09
+    ldx $0A
+    rts
+    .func_flags zp_call
+endproc
+
+proc _fdot
+    .zp_uses $10, $11, $12, $13, $14, $15, $16, $17, $08, $09, $0A, $0B
+    .zp_clobbers $08, $09, $0A, $0B
+    .reg_clobbers A, X
+    .flag_clobbers C, N, Z
+    LOADAB $10, $12
+    lda PROD
+    sta $08
+    lda PROD + 1
+    sta $09
+    lda PROD + 2
+    sta $0A
+    lda PROD + 3
+    sta $0B
+    LOADAB $14, $16
+    clc
+    lda $08
+    adc PROD
+    sta $08
+    lda $09
+    adc PROD + 1
+    sta $09
+    lda $0A
+    adc PROD + 2
+    sta $0A
+    lda $0B
+    adc PROD + 3
+    sta $0B
+    ; bits 14-29
+    asl $09
+    rol $0A
+    rol $0B
+    asl $09
+    rol $0A
+    rol $0B
+    lda $0A
+    ldx $0B
+    rts
+    .func_flags zp_call
+endproc
+
+proc _sq2
+    .zp_uses $10, $11, $12, $13, $08, $09, $0A, $0B
+    .zp_clobbers $08, $09, $0A, $0B
+    .reg_clobbers A, X, Y, Z
+    .flag_clobbers C, N, Z
+    LOADAB $10, $10
+    lda PROD
+    sta $08
+    lda PROD + 1
+    sta $09
+    lda PROD + 2
+    sta $0A
+    lda PROD + 3
+    sta $0B
+    LOADAB $12, $12
+    clc
+    lda $08
+    adc PROD
+    pha
+    lda $09
+    adc PROD + 1
+    tax
+    lda $0A
+    adc PROD + 2
+    tay
+    lda $0B
+    adc PROD + 3
+    taz
+    pla
+    rts
+    .func_flags zp_call
+endproc
+
+proc _mul32
+    .zp_uses $10, $11, $12, $13
+    .reg_clobbers A, X, Y, Z
+    .flag_clobbers C, N, Z
+    LOADAB $10, $12
+    lda PROD + 3
+    taz
+    ldy PROD + 2
+    ldx PROD + 1
+    lda PROD
+    rts
+    .func_flags zp_call
+endproc

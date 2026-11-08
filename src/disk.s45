@@ -1,0 +1,323 @@
+; disk.s45 — the KERNAL, the drive, the other program, and the samples
+;
+; kcall and __rom_call are race's (inpg/race/src/kernal.s45): the program
+; has the RAM at $C000-$CFFF, so the C65 ROM normally mapped there ($D030
+; bit 5) is mapped out while it runs, with interrupts off; a KERNAL routine
+; runs on the ROM's page-1 stack and base page 0 with the ROM in.
+;
+; chain: the other program (PINBALL or PLAY) loaded over this one and run.
+; A stub copied to $1F10 does it: the name at $1F70, its length at $1F6F.
+.cpu _45gs02
+.segmentOrder code, data, bss
+
+.global _kcall
+.global _kc_a
+.global _kc_x
+.global _kc_y
+.global _kc_c
+.global _kc_target
+.global _kc_ptr
+.global __rom_call
+.extern __saved_spl, __saved_sph, __bp_prog, ___cbm_target
+
+;   The ROM is mapped out before anything else runs: this file's "init"
+;   piece comes first in the program (ln45 puts the init chunks first, the
+;   program's objects before the library's), before crt0's, which it falls
+;   through into. The startup code's stack is above $C000 too.
+
+.segment "init"
+    sei
+    ; the ROM area write-enabled (a hypervisor call): BASIC, its graphics and
+    ; the monitor are not needed, and the code overlays are kept there. The
+    ; call toggles the protection: only when a byte there ($3BFFF) cannot
+    ; be changed (the other program may have enabled it already)
+    lda $FB
+    pha
+    lda $FC
+    pha
+    lda $FD
+    pha
+    lda $FE
+    pha
+    lda #$FF
+    sta $FB
+    lda #$BF
+    sta $FC
+    lda #$03
+    sta $FD
+    lda #$00
+    sta $FE
+    ldz #0
+    lda [$FB],z
+    eor #$FF
+    sta [$FB],z
+    cmp [$FB],z
+    beq @romrw
+    lda #$70
+    sta $D640
+    clv
+    bra @romok
+@romrw:
+    eor #$FF
+    sta [$FB],z
+@romok:
+    pla
+    sta $FE
+    pla
+    sta $FD
+    pla
+    sta $FC
+    pla
+    sta $FB
+    lda $D030
+    and #$DF
+    sta $D030
+    ; (on into crt0)
+
+;   Its state is in low RAM ($1F00, past game.c's save record): the
+;   program's own data can reach $C000, which reads as ROM while the
+;   routine's registers are loaded
+KSTATE     = $1F00
+_kc_a      = KSTATE
+_kc_x      = KSTATE + 1
+_kc_y      = KSTATE + 2
+_kc_c      = KSTATE + 3
+_kc_target = KSTATE + 4
+_kc_ptr    = KSTATE + 6
+k_spl      = KSTATE + 8
+k_sph      = KSTATE + 9
+k_keep     = KSTATE + 10
+
+.code
+
+proc _kcall
+    lda _kc_target
+    sta @jsr + 1
+    lda _kc_target + 1
+    sta @jsr + 2
+    sei
+    tsx                     ; the program's stack pointer
+    stx k_spl
+    tsy
+    sty k_sph
+    see                     ; the ROM's page-1 stack (8-bit), base page 0
+    ldx __saved_spl + 1
+    txs
+    ldy __saved_sph + 1
+    tys
+    lda #0
+    tab
+    lda $FB                 ; SAVE's pointer, if one is given
+    sta k_keep
+    lda $FC
+    sta k_keep + 1
+    lda _kc_ptr
+    ora _kc_ptr + 1
+    beq @noptr
+    lda _kc_ptr
+    sta $FB
+    lda _kc_ptr + 1
+    sta $FC
+@noptr:
+    lda $D030               ; the ROM at $C000 in
+    ora #$20
+    sta $D030
+    lda _kc_a
+    ldx _kc_x
+    ldy _kc_y
+    cli
+@jsr:
+    jsr $FFFF               ; (patched above)
+    php
+    sei
+    sta _kc_a
+    stx _kc_x
+    sty _kc_y
+    pla
+    and #1
+    sta _kc_c
+    lda $D030               ; and out again
+    and #$DF
+    sta $D030
+    lda k_keep
+    sta $FB
+    lda k_keep + 1
+    sta $FC
+    cle                     ; back to the program's 16-bit stack
+    ldy k_sph
+    tys
+    ldx k_spl
+    txs
+    ldz #0
+    jmp __bp_prog           ; the program's base page; returns to the caller
+endproc
+
+; __rom_call — the library's KERNAL call, as the code overlays' loader
+; (crt0's __ovl_init, before main) makes it: the routine at ___cbm_target
+; with A, X, Y; A, X, Y and C back. This one is the program's own (the
+; library's is not linked): through kcall, so the ROM at $C000 is mapped in
+; for it while the program's stack (above $C000) is out of the way
+proc __rom_call
+    sta _kc_a
+    stx _kc_x
+    sty _kc_y
+    lda ___cbm_target
+    sta _kc_target
+    lda ___cbm_target + 1
+    sta _kc_target + 1
+    lda #0
+    sta _kc_ptr
+    sta _kc_ptr + 1
+    jsr _kcall
+    lda _kc_c
+    lsr                     ; C: the routine's
+    lda _kc_a
+    ldx _kc_x
+    ldy _kc_y
+    rts
+endproc
+
+; unsigned char drive(void): the drive the program came from ($BA in the
+; ROM's base page; 8 if none)
+.global _drive
+proc _drive
+    tba
+    tax
+    lda #0
+    tab
+    lda $BA
+    tay
+    txa
+    tab
+    tya
+    cmp #8
+    bcs @ok
+    lda #8
+@ok:
+    ldx #0
+    rts
+endproc
+
+; void chain(void): never returns
+.global _chain
+proc _chain
+    sei
+    ldx #@end - @stub - 1
+@copy:
+    lda @stub,x
+    sta $1F10,x
+    dex
+    bpl @copy
+    jmp $1F10
+@stub:
+    lda #0
+    tab
+    see
+    ldx #$FF
+    txs
+    ldy #$01
+    tys
+    lda $D030
+    ora #$20
+    sta $D030
+    cli
+    lda #0
+    ldx #0
+    jsr $FF6B
+    lda $1F6F
+    ldx #$70
+    ldy #$1F
+    jsr $FFBD
+    lda #1
+    ldx $BA
+    ldy #1
+    jsr $FFBA
+    lda #0
+    jsr $FFD5
+    bcs @fail
+    jmp $200D
+@fail:
+    jmp ($FFFC)
+@end:
+endproc
+
+; Samples: audio DMA channel snd_ch plays snd_len bytes (8-bit unsigned)
+; from chip RAM at snd_addr (24 bits), at rate register value snd_rate (24
+; bits), volume snd_vol on both sides; snd_mode $A2 once, $E2 looping.
+.global _snd_on
+.global _snd_off
+.global _snd_play
+.global _snd_ch
+.global _snd_addr
+.global _snd_len
+.global _snd_rate
+.global _snd_vol
+.global _snd_mode
+
+.data
+_snd_ch:   .byte 0
+_snd_addr: .byte 0, 0, 0
+_snd_len:  .word 0
+_snd_rate: .byte 0, 0, 0
+_snd_vol:  .byte 0
+_snd_mode: .byte $A2
+
+.code
+proc _snd_on
+    lda #0
+    sta $D720
+    sta $D730
+    sta $D740
+    sta $D750
+    lda #$80
+    sta $D711
+    rts
+endproc
+
+proc _snd_off
+    lda #0
+    sta $D720
+    sta $D730
+    sta $D740
+    sta $D750
+    sta $D711
+    rts
+endproc
+
+proc _snd_play
+    lda _snd_ch
+    tax
+    asl
+    asl
+    asl
+    asl
+    tay
+    lda #0
+    sta $D720,y
+    lda _snd_addr
+    sta $D721,y
+    sta $D72A,y
+    clc
+    adc _snd_len
+    sta $D727,y
+    lda _snd_addr+1
+    sta $D722,y
+    sta $D72B,y
+    adc _snd_len+1
+    sta $D728,y
+    lda _snd_addr+2
+    sta $D723,y
+    sta $D72C,y
+    lda _snd_rate
+    sta $D724,y
+    lda _snd_rate+1
+    sta $D725,y
+    lda _snd_rate+2
+    sta $D726,y
+    lda _snd_vol
+    sta $D729,y
+    sta $D71C,x
+    lda _snd_mode
+    sta $D720,y
+    rts
+endproc

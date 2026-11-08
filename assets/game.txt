@@ -1,0 +1,48 @@
+; Pinball Construction Set — the game's music (tune45 text), original, for SID 1
+;   title      the menu's theme: a driving arcade tune in A minor
+;   ballstart  a ball onto the plunger
+;   multiball  a fanfare
+;   gameover   the end
+;   groove     under the play, quietly (M turns it off)
+
+wavetable snare noise pulse:-12 pulse:-19 pulse:-24
+
+instrument lead   pulse 06 a8 0600 2 1 pwm=20 vdelay=8
+instrument bass   saw   04 a6 0800 0 1 filter=lp res=10 cutoff=300
+instrument kick   pulse 08 00 0800 0 0 slide=-47
+instrument snare  pulse 00 f0 0800 0 0 hr=1 table=snare
+instrument hat    noise 00 a0 0800 0 0
+instrument bell   tri   09 0a 0000 0 0
+instrument stab   pulse 02 54 0300 0 1
+instrument soft   tri   28 a6 0000 1 1 vdelay=10
+instrument pluck  pulse 03 44 0400 0 1
+
+; ---------------------------------------------------------------- jingles
+
+tune ballstart 4 once 12
+v1: @lead c5:2 e5:2 g5:2 c6:6
+v2: @bass c2:2 g2:2 e2:2 c2:6
+v3: @bell r:6 c6:6
+
+tune multiball 5 once 20
+v1: @lead g4:2 c5:2 e5:2 g5:4 e5:2 g5:8
+v2: @bass c2:4 e2:4 g2:4 c3:8
+v3: @snare d4:2 d4:2 d4:2 d4:2 @kick c3:4 @snare d4:2 d4:2 d4:2 d4:2
+
+tune gameover 8 once 16
+v1: @lead e5:4 d5:4 c5:4 b4:4 | a4:8 e4:4 a3:4
+v2: @bass a1:8 g1:8 | f1:8 e1:4 a0:4
+v3: @bell a5:16 | a4:16
+
+; ---------------------------------------------------------------- under the play
+
+pattern gC: c2:3 c2:1 r:2 g1:2 c2:3 c2:1 r:2 e2:2
+pattern gF: f1:3 f1:1 r:2 c2:2 f1:3 f1:1 r:2 a1:2
+pattern gG: g1:3 g1:1 r:2 d2:2 g1:3 g1:1 r:2 b1:2
+pattern gd: @kick c3:4 @hat a6:2 @hat a6:2 @snare d4:4 @hat a6:2 @hat a6:2
+
+tune groove 7 loop 16
+v1: @soft e4:6 g4:2 c5:8 | a4:6 c5:2 f5:8 | g4:6 b4:2 d5:4 b4:4 | c5:12 r:4 | \
+    e5:6 d5:2 c5:8 | a4:6 g4:2 f4:8 | d4:4 g4:4 b4:4 d5:4 | c5:12 r:4
+v2: @bass *gC | *gF | *gG | *gC | *gC | *gF | *gG | *gC
+v3: *gd | *gd | *gd | *gd | *gd | *gd | *gd | *gd

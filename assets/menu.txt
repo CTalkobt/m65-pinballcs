@@ -1,0 +1,42 @@
+; Pinball Construction Set — the menu's music (tune45 text), original, for SID 1
+;   title      the menu's theme: a driving arcade tune in A minor
+;   ballstart  a ball onto the plunger
+;   multiball  a fanfare
+;   gameover   the end
+;   groove     under the play, quietly (M turns it off)
+
+wavetable snare noise pulse:-12 pulse:-19 pulse:-24
+
+instrument lead   pulse 06 a8 0600 2 1 pwm=20 vdelay=8
+instrument bass   saw   04 a6 0800 0 1 filter=lp res=10 cutoff=300
+instrument kick   pulse 08 00 0800 0 0 slide=-47
+instrument snare  pulse 00 f0 0800 0 0 hr=1 table=snare
+instrument hat    noise 00 a0 0800 0 0
+instrument bell   tri   09 0a 0000 0 0
+instrument stab   pulse 02 54 0300 0 1
+instrument soft   tri   28 a6 0000 1 1 vdelay=10
+instrument pluck  pulse 03 44 0400 0 1
+
+; ---------------------------------------------------------------- the title
+
+pattern bAm: a1:2 a1:2 a2:2 a1:2 a1:2 a2:2 a1:2 g1:2
+pattern bF:  f1:2 f1:2 f2:2 f1:2 f1:2 f2:2 f1:2 e1:2
+pattern bC:  c2:2 c2:2 c3:2 c2:2 c2:2 c3:2 c2:2 b1:2
+pattern bG:  g1:2 g1:2 g2:2 g1:2 g1:2 g2:2 g1:2 a1:2
+pattern bE:  e1:2 e1:2 e2:2 e1:2 e1:2 e2:2 e1:2 g#1:2
+pattern dr:  @kick c3:2 @hat a6:2 @snare d4:2 @hat a6:2 @kick c3:2 @kick c3:2 @snare d4:2 @hat a6:2
+pattern df:  @kick c3:2 @hat a6:2 @snare d4:2 @hat a6:2 @kick c3:2 @snare d4:2 @snare d4:1 @snare d4:1 @snare d4:2
+
+tune title 6 loop 16
+v1: @lead a4:2 c5:2 e5:2 a5:4 g5:2 e5:2 c5:2 | f5:2 e5:2 c5:2 a4:4 c5:2 f5:4 | \
+    e5:2 g5:2 c6:4 b5:2 g5:2 e5:4 | d5:2 g5:2 b5:2 d6:4 b5:2 g5:4 | \
+    a5:4 e5:2 c5:2 a4:4 c5:2 e5:2 | f5:4 a5:2 f5:2 c5:4 a4:4 | \
+    g5:2 f5:2 e5:2 d5:2 b4:2 d5:2 g5:4 | g#5:4 e5:4 b4:4 e5:4 | \
+    @pluck a5:2 a5:2 c6:2 a5:2 e5:2 a5:2 c6:2 e6:2 | f5:2 f5:2 a5:2 f5:2 c5:2 f5:2 a5:2 c6:2 | \
+    g5:2 g5:2 c6:2 g5:2 e5:2 g5:2 c6:2 e6:2 | d6:2 b5:2 g5:2 d5:2 g5:2 b5:2 d6:2 g6:2 | \
+    @lead e6:4 c6:2 a5:2 e5:4 a5:4 | f6:4 c6:2 a5:2 f5:4 a5:4 | \
+    d6:2 c6:2 b5:2 a5:2 g5:2 f5:2 e5:2 d5:2 | e5:8 g#4:4 b4:4
+v2: @bass *bAm | *bF | *bC | *bG | *bAm | *bF | *bG | *bE | \
+    *bAm | *bF | *bC | *bG | *bAm | *bF | *bG | *bE
+v3: *dr | *dr | *dr | *df | *dr | *dr | *dr | *df | *dr | *dr | *dr | *df | *dr | *dr | *dr | *df
+
